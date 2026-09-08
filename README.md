@@ -14,6 +14,20 @@ mkdir -p "$HOME/GB10"
 git clone --single-branch --branch codex/gb10-a16-fp4-g128-csv-tests \
   https://github.com/the-mountain-rcj/flute-gb10.git "$HOME/GB10/flute-gb10"
 cd "$HOME/GB10/flute-gb10"
+```
+
+先进行安装前预检，不安装依赖、不创建环境、不修改已有 CUDA / PyTorch：
+
+```bash
+set -o pipefail
+python3 scripts/check_gb10_env.py 2>&1 | tee precheck-gb10.log
+```
+
+出现 `FAIL` 时先停下，把 `precheck-gb10.log` 发回排查。当前没有 PyTorch 不会单独导致预检失败，因为下一步会安装独立的指定版本。预检只验证环境条件，不能代替 FLUTE 编译和 GPU 正确性测试。
+
+预检无 `FAIL` 后才执行安装（安装脚本也会自动重新预检，失败不会开始安装）：
+
+```bash
 bash scripts/setup_gb10_a16_fp4.sh
 source .venv-gb10-flute/bin/activate
 
@@ -36,6 +50,8 @@ python benchmarks/bench_a16_fp4_g128.py \
 已有 Excel 导出的 `testcase_id,m,k,n` CSV 可以直接替换 `--csv`；FP16 用 `--a-dtype fp16`。默认激活和 scale 均为 BF16；权重实际为 4 位，group size 固定 128。本入口保守要求 K 为 512 的倍数、N 为 256 的倍数，不改变分组、不静默 padding。
 
 结果包含耗时、TFLOPS、误差、正确性检查覆盖范围，并写出环境 metadata。大矩阵默认抽样检查输出，但每个参考输出都计算完整 K。详细口径、手工安装、故障处理和 CPU 单测见 [GB10 完整说明](docs/gb10_a16_fp4_g128.md)。**构建失败或 smoke 失败时保留日志，不能据此报性能通过。**
+
+对于上述大矩阵，在估算 dense A16 峰值约 125 TFLOPS 的假设下，理想计算下限约 13.2 ms；50% 有效利用率对应约 26.4 ms。可暂按 20–40 ms 做低置信度规划，**不是实测结果、保证范围或通过标准**。计算假设和带宽分析见完整说明第 8 节；本实现执行 16 位 MMA，不能按 FP4 稀疏峰值估时。
 
 以下保留上游 README 和许可证，属于 FLUTE 原项目说明，不代表其官方已验证 GB10。
 

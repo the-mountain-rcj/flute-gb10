@@ -21,6 +21,10 @@ if [[ "$task_nvcc_version" != *"release 13.0,"* ]]; then
     exit 2
 fi
 
+# Check driver/device/toolkit/headers and directory conflicts BEFORE creating
+# the isolated environment, downloading dependencies or compiling the library.
+python3.12 "$task_root/scripts/check_gb10_env.py"
+
 task_venv="$task_root/.venv-gb10-flute"
 if [[ -e "$task_venv" && ! -f "$task_venv/pyvenv.cfg" ]]; then
     echo "$task_venv exists but is not a virtual environment; refusing to overwrite it." >&2
