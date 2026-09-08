@@ -1,74 +1,74 @@
 # GB10 A16 × FP4 E2M1 / group_size=128 测试
 
-本仓库在 [FLUTE](https://github.com/HanGuo97/flute) 原版代码上增加独立 CSV benchmark。
-FLUTE（Flexible Lookup Table Engine）通过查表在融合 GEMM 内解码低比特权重，再执行 FP16/BF16 MMA；本测试使用真实 E2M1 FP4 权重和 K 方向 g128 scale，不将 A 转成 FP8。
+直接按 [FLUTE 原版源码](https://github.com/HanGuo97/flute) 的方式安装，再调用库已有的 GEMM。库代码、HPP 和 `setup.py` 与上游基线一致；本仓库只保留 CSV benchmark、CPU 测试和说明，不再添加安装包装或 Toolkit 版本预检。
 
-目标是 **GB10 / SM121、Linux ARM64**。库内核、HPP、`setup.py` 均未修改；已通过 CPU 测试，**GB10 编译及 GPU 正确性/性能仍待实机验证**。
+你现有的 CUDA Toolkit 13.4 可以直接尝试下面的构建，无需换 Toolkit、改内核或加实验参数。**尚未在 GB10 上完成编译/运行验证；能否运行以实际构建和 smoke 为准。**
 
-## GB10 快速开始
+## 最短使用路径
 
-前提：Python 3.12（含 venv）、Git、C++ 编译器，以及已安装的 CUDA Toolkit / 驱动。默认流程严格要求 Toolkit 13.0；保留现有 13.4 试编译的显式实验流程见下方。下面脚本只在本仓库的独立 `.venv-gb10-flute` 环境中安装依赖，不使用当前 DeepGEMM 环境。它固定 PyTorch 2.9.1 cu130、CUTLASS v3.4.1，编译需要时间和网络；不要直接安装上游全部 `requirements.txt`。
+以下在 GB10 的 Bash、仓库根目录中逐步执行，一步失败就先停下。你已有的目录是 `/home/r00799896/flute-gb10`，不必重新 clone。
 
-```bash
-mkdir -p "$HOME/GB10"
-git clone --single-branch --branch codex/gb10-a16-fp4-g128-csv-tests \
-  https://github.com/the-mountain-rcj/flute-gb10.git "$HOME/GB10/flute-gb10"
-cd "$HOME/GB10/flute-gb10"
-```
+### 1. 准备 Python 环境
 
-先进行安装前预检，不安装依赖、不创建环境、不修改已有 CUDA / PyTorch：
+如果已经创建了 `.venv-gb10-flute`，跳过创建命令，直接激活。只在该独立环境里安装依赖，不动 DeepGEMM 或系统 Python。
 
 ```bash
-set -o pipefail
-python3 scripts/check_gb10_env.py 2>&1 | tee precheck-gb10.log
-```
-
-出现 `FAIL` 时先停下，把 `precheck-gb10.log` 发回排查。当前没有 PyTorch 不会单独导致预检失败，因为下一步会安装独立的指定版本。预检只验证环境条件，不能代替 FLUTE 编译和 GPU 正确性测试。
-
-预检无 `FAIL` 后才执行安装（安装脚本也会自动重新预检，失败不会开始安装）：
-
-```bash
-bash scripts/setup_gb10_a16_fp4.sh
+python3.12 -m venv .venv-gb10-flute
 source .venv-gb10-flute/bin/activate
+python -m pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu130
+python -m pip install setuptools packaging ninja wheel click jaxtyping
+```
 
-# 先完整检查小规模输出；passed=True 才继续正式测试。
+选择 Torch 2.9.1 是为了配合上游的 C++17 构建；这里没有另加版本拦截。若之前已装好相同依赖，无需重装。不要安装上游整套 `requirements.txt`，本 GEMM 测试不需要其中的 vLLM 等模型集成依赖。
+
+### 2. 准备原版 CUTLASS
+
+上游 `setup.py` 使用固定路径 `/workspace/cutlass`。目录不存在时执行：
+
+```bash
+mkdir -p /workspace
+git clone --depth 1 --branch v3.4.1 https://github.com/NVIDIA/cutlass.git /workspace/cutlass
+```
+
+如果该目录已经是原版 v3.4.1，跳过 clone；若是其他版本或有自己的修改，不要覆盖。版本可用 `git -C /workspace/cutlass describe --tags --exact-match` 查看。无需改 HPP 或提供额外 include 环境变量。
+
+### 3. 直接编译安装库
+
+你机器上的 Toolkit 路径是 `/usr/local/cuda-13.4`。环境变量在当前终端生效，不改系统软链接：
+
+```bash
+export CUDA_HOME=/usr/local/cuda-13.4
+export PATH="$CUDA_HOME/bin:$PATH"
+export TORCH_CUDA_ARCH_LIST=12.1
+export MAX_JOBS=1
+set -o pipefail
+python -m pip install -v -e . --no-build-isolation --no-deps 2>&1 | tee build-gb10.log
+```
+
+`--no-build-isolation` 使用当前 PyTorch 编译扩展；`--no-deps` 避免拉入上游整套模型依赖。`nvcc` 13.4 与 PyTorch cu130 的小版本差异可能产生警告，不等于构建失败，也不保证兼容。看到真正的编译/链接错误时保留 `build-gb10.log`。
+
+### 4. 直接运行已有库的测试入口
+
+先跑小矩阵的完整正确性检查：
+
+```bash
 python benchmarks/bench_a16_fp4_g128.py \
   --csv benchmarks/data/a16_fp4_g128_smoke.csv \
   --result-csv results/smoke_bf16.csv \
   --a-dtype bf16 --check-rows 0 --check-cols 0
 ```
 
-只有构建成功、smoke 全部通过后，再单独运行：
+smoke **3/3 passed** 后再跑 `M=8192, K=1536, N=65536`：
 
 ```bash
-# 用户的大矩阵：M=8192, K=1536, N=65536。
 python benchmarks/bench_a16_fp4_g128.py \
   --csv benchmarks/data/a16_fp4_g128_large.csv \
   --result-csv results/large_bf16.csv --a-dtype bf16
 ```
 
-已有 Excel 导出的 `testcase_id,m,k,n` CSV 可以直接替换 `--csv`；FP16 用 `--a-dtype fp16`。默认激活和 scale 均为 BF16；权重实际为 4 位，group size 固定 128。本入口保守要求 K 为 512 的倍数、N 为 256 的倍数，不改变分组、不静默 padding。
+这个入口只负责造数、调用原版 `tune_and_pack` / `qgemm`、校验和计时，不是另一套 kernel。已有 Excel 导出的 `testcase_id,m,k,n` CSV 可以替换 `--csv`；FP16 用 `--a-dtype fp16`。FP4 E2M1、g128、误差检查和性能口径均保持不变。
 
-结果包含耗时、TFLOPS、误差、正确性检查覆盖范围，并写出环境 metadata。大矩阵默认抽样检查输出，但每个参考输出都计算完整 K。详细口径、手工安装、故障处理和 CPU 单测见 [GB10 完整说明](docs/gb10_a16_fp4_g128.md)。**构建失败或 smoke 失败时保留日志，不能据此报性能通过。**
-
-对于上述大矩阵，在估算 dense A16 峰值约 125 TFLOPS 的假设下，理想计算下限约 13.2 ms；50% 有效利用率对应约 26.4 ms。可暂按 20–40 ms 做低置信度规划，**不是实测结果、保证范围或通过标准**。计算假设和带宽分析见完整说明第 8 节；本实现执行 16 位 MMA，不能按 FP4 稀疏峰值估时。
-
-### 保留 CUDA Toolkit 13.4 试编译（实验性）
-
-如果现有 `nvcc --version` 为 13.4，可以显式选择下面的流程，不必安装其他 Toolkit，也不改全局 CUDA 软链接、HPP 或内核。该开关只选择 **13.4**，不任意放行所有 13.x；仍检查驱动支持 CUDA 13.4、SM121、开发头文件及其他前提。
-
-```bash
-set -o pipefail
-python3 scripts/check_gb10_env.py --experimental-cuda-13-4 2>&1 | tee precheck-gb10-cu134.log
-```
-
-只有出现 `Summary: 0 failure(s)` 后，才在同一终端运行：
-
-```bash
-bash scripts/setup_gb10_a16_fp4.sh --experimental-cuda-13-4 2>&1 | tee setup-gb10-cu134.log
-```
-
-此路径仍安装独立的 PyTorch 2.9.1 **cu130**；`torch.version.cuda` 为 13.0、`nvcc` 为 13.4 是预期组合，PyTorch 的 minor-version mismatch 警告不是成功或失败判据。**尚未在 GB10 上实测，不能保证旧版 FLUTE/CUTLASS 能编译或正确运行。** 安装成功后激活 `.venv-gb10-flute`，按上面的命令先验证 smoke **3/3 passed**，再跑大矩阵。详细说明见完整说明第 2.3 节。
+详细格式、限制和性能解释见 [完整说明](docs/gb10_a16_fp4_g128.md)。
 
 以下保留上游 README 和许可证，属于 FLUTE 原项目说明，不代表其官方已验证 GB10。
 
