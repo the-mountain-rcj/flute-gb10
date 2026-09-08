@@ -5,6 +5,7 @@ This does not install packages, compile FLUTE, change repositories, or prove
 kernel compatibility. Run the GPU smoke test after a successful installation.
 """
 
+import argparse
 import ctypes
 import json
 from pathlib import Path
@@ -120,13 +121,20 @@ def check_command(name):
     return f"{executable}; {version[0] if version else 'command available'}"
 
 
-def check_toolkit():
+def check_toolkit(cuda_version="13.0"):
+    if cuda_version not in {"13.0", "13.4"}:
+        raise CheckError(f"unsupported recipe CUDA version: {cuda_version}")
     executable = shutil.which("nvcc")
     if not executable:
-        raise CheckError("nvcc not in PATH; select CUDA Toolkit 13.0 (nvidia-smi alone is insufficient)")
+        raise CheckError(f"nvcc not in PATH; select CUDA Toolkit {cuda_version} (nvidia-smi alone is insufficient)")
     version = run([executable, "--version"])
-    if not re.search(r"release\s+13\.0,", version):
-        raise CheckError("selected nvcc is not CUDA 13.0; this installation recipe is pinned to 13.0")
+    match = re.search(r"release\s+(\d+\.\d+),", version)
+    actual_version = match.group(1) if match else "unknown"
+    if actual_version != cuda_version:
+        hint = ("; to explicitly try an installed CUDA 13.4, use --experimental-cuda-13-4"
+                if cuda_version == "13.0" and actual_version == "13.4" else "")
+        raise CheckError(f"selected nvcc is not CUDA {cuda_version}: {executable} reports {actual_version}; "
+                         f"this installation mode requires {cuda_version}{hint}")
     targets = run([executable, "--list-gpu-code"])
     if "sm_121" not in targets.split():
         raise CheckError("selected nvcc does not list the sm_121 compilation target")
@@ -139,7 +147,7 @@ def check_toolkit():
                  toolkit / "targets" / "aarch64-linux" / "lib"]
     if not any((path / "libcudart.so").is_file() for path in libraries):
         raise CheckError(f"CUDA development library libcudart.so missing under {toolkit}")
-    return f"CUDA 13.0 with sm_121, headers and libcudart.so; root={toolkit}"
+    return f"CUDA {cuda_version} with sm_121, headers and libcudart.so; root={toolkit}"
 
 
 def inspect_driver():
@@ -186,12 +194,14 @@ def inspect_driver():
             "count": count.value}
 
 
-def check_driver():
+def check_driver(minimum_cuda=13000):
     info = inspect_driver()
     if info["capability"] != (12, 1):
         raise CheckError(f"GPU 0 is {info['name']}, capability {info['capability']}; expected GB10 SM121")
-    if info["driver_cuda"] < 13000:
-        raise CheckError(f"driver CUDA API version {info['driver_cuda']} is below 13000; update the GB10 driver for CUDA 13.0")
+    if info["driver_cuda"] < minimum_cuda:
+        required_version = f"{minimum_cuda // 1000}.{minimum_cuda % 1000 // 10}"
+        raise CheckError(f"driver CUDA API version {info['driver_cuda']} is below {minimum_cuda}; "
+                         f"this recipe requires driver support for CUDA {required_version}")
     version = info["driver_cuda"]
     return (f"GPU 0: {info['name']}, SM121; {info['count']} visible GPU(s); "
             f"driver supports CUDA {version // 1000}.{version % 1000 // 10}")
@@ -239,17 +249,29 @@ def report_resources(report, root=ROOT):
         report.emit("WARN", "Available RAM", f"could not inspect /proc/meminfo: {exc}")
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--experimental-cuda-13-4", action="store_true",
+                        help="try exactly CUDA Toolkit 13.4 with the pinned PyTorch 2.9.1/cu130; "
+                             "not a claim of FLUTE compatibility; all other checks remain enabled")
+    args = parser.parse_args(argv)
+    cuda_version = "13.4" if args.experimental_cuda_13_4 else "13.0"
+    minimum_cuda = 13040 if args.experimental_cuda_13_4 else 13000
     report = Report()
     print("GB10 preflight: read-only; no install/download/build and no PyTorch requirement.")
+    if args.experimental_cuda_13_4:
+        report.emit("WARN", "Experimental CUDA mode",
+                    "CUDA Toolkit 13.4 + PyTorch 2.9.1/cu130 is an UNVALIDATED build combination; "
+                    "expect a CUDA minor-version mismatch warning. Driver support for 13.4, SM121, "
+                    "headers and libraries are still required; compile and pass GPU smoke before timing.")
     for label, action in [
         ("Platform", check_platform),
         ("Python build prerequisites", check_base_python),
         ("Existing environment", check_existing_venv),
         ("git", lambda: check_command("git")),
         ("C++ compiler", lambda: check_command("c++")),
-        ("CUDA Toolkit", check_toolkit),
-        ("GPU / NVIDIA driver", check_driver),
+        ("CUDA Toolkit", lambda: check_toolkit(cuda_version=cuda_version)),
+        ("GPU / NVIDIA driver", lambda: check_driver(minimum_cuda=minimum_cuda)),
         ("CUTLASS conflict check", check_cutlass),
     ]:
         report.check(label, action)

@@ -7,7 +7,7 @@ FLUTE（Flexible Lookup Table Engine）通过查表在融合 GEMM 内解码低�
 
 ## GB10 快速开始
 
-前提：Python 3.12（含 venv）、Git、C++ 编译器，以及已安装的 CUDA Toolkit 13.0 / 驱动。下面脚本只在本仓库的独立 `.venv-gb10-flute` 环境中安装依赖，不使用当前 DeepGEMM 环境。它固定 PyTorch 2.9.1 cu130、CUTLASS v3.4.1，编译需要时间和网络；不要直接安装上游全部 `requirements.txt`。
+前提：Python 3.12（含 venv）、Git、C++ 编译器，以及已安装的 CUDA Toolkit / 驱动。默认流程严格要求 Toolkit 13.0；保留现有 13.4 试编译的显式实验流程见下方。下面脚本只在本仓库的独立 `.venv-gb10-flute` 环境中安装依赖，不使用当前 DeepGEMM 环境。它固定 PyTorch 2.9.1 cu130、CUTLASS v3.4.1，编译需要时间和网络；不要直接安装上游全部 `requirements.txt`。
 
 ```bash
 mkdir -p "$HOME/GB10"
@@ -52,6 +52,23 @@ python benchmarks/bench_a16_fp4_g128.py \
 结果包含耗时、TFLOPS、误差、正确性检查覆盖范围，并写出环境 metadata。大矩阵默认抽样检查输出，但每个参考输出都计算完整 K。详细口径、手工安装、故障处理和 CPU 单测见 [GB10 完整说明](docs/gb10_a16_fp4_g128.md)。**构建失败或 smoke 失败时保留日志，不能据此报性能通过。**
 
 对于上述大矩阵，在估算 dense A16 峰值约 125 TFLOPS 的假设下，理想计算下限约 13.2 ms；50% 有效利用率对应约 26.4 ms。可暂按 20–40 ms 做低置信度规划，**不是实测结果、保证范围或通过标准**。计算假设和带宽分析见完整说明第 8 节；本实现执行 16 位 MMA，不能按 FP4 稀疏峰值估时。
+
+### 保留 CUDA Toolkit 13.4 试编译（实验性）
+
+如果现有 `nvcc --version` 为 13.4，可以显式选择下面的流程，不必安装其他 Toolkit，也不改全局 CUDA 软链接、HPP 或内核。该开关只选择 **13.4**，不任意放行所有 13.x；仍检查驱动支持 CUDA 13.4、SM121、开发头文件及其他前提。
+
+```bash
+set -o pipefail
+python3 scripts/check_gb10_env.py --experimental-cuda-13-4 2>&1 | tee precheck-gb10-cu134.log
+```
+
+只有出现 `Summary: 0 failure(s)` 后，才在同一终端运行：
+
+```bash
+bash scripts/setup_gb10_a16_fp4.sh --experimental-cuda-13-4 2>&1 | tee setup-gb10-cu134.log
+```
+
+此路径仍安装独立的 PyTorch 2.9.1 **cu130**；`torch.version.cuda` 为 13.0、`nvcc` 为 13.4 是预期组合，PyTorch 的 minor-version mismatch 警告不是成功或失败判据。**尚未在 GB10 上实测，不能保证旧版 FLUTE/CUTLASS 能编译或正确运行。** 安装成功后激活 `.venv-gb10-flute`，按上面的命令先验证 smoke **3/3 passed**，再跑大矩阵。详细说明见完整说明第 2.3 节。
 
 以下保留上游 README 和许可证，属于 FLUTE 原项目说明，不代表其官方已验证 GB10。
 

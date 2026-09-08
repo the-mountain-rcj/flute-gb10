@@ -1,7 +1,27 @@
 #!/usr/bin/env bash
 # Build the stock FLUTE library for this GB10 experiment, without kernel edits.
-# This script is syntax-checked only; a GB10 build/run is still required.
+# This script has CPU/mocked checks only; a GB10 build/run is still required.
 set -euo pipefail
+
+task_preflight_args=()
+for task_argument in "$@"; do
+    case "$task_argument" in
+        --experimental-cuda-13-4)
+            task_preflight_args=(--experimental-cuda-13-4)
+            ;;
+        -h|--help)
+            echo "Usage: bash scripts/setup_gb10_a16_fp4.sh [--experimental-cuda-13-4]"
+            echo "Default: installed CUDA Toolkit 13.0. Experimental flag: installed Toolkit 13.4."
+            echo "Both modes keep PyTorch 2.9.1/cu130 in an isolated venv and check GB10/SM121."
+            echo "No Toolkit/driver installation or kernel edits; GPU compatibility is not yet validated."
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $task_argument. Use --help." >&2
+            exit 2
+            ;;
+    esac
+done
 
 task_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 task_machine="$(uname -m)"
@@ -11,19 +31,18 @@ if [[ "$(uname -s)" != Linux || ( "$task_machine" != aarch64 && "$task_machine" 
 fi
 for task_command in python3.12 nvcc c++ git; do
     if ! command -v "$task_command" >/dev/null 2>&1; then
-        echo "Missing $task_command. Install Python 3.12 + venv, build-essential, git and CUDA Toolkit 13.0 first." >&2
+        echo "Missing $task_command. Requires Python 3.12 + venv, build-essential, git and the selected CUDA Toolkit (see --help)." >&2
         exit 2
     fi
 done
-task_nvcc_version="$(nvcc --version)"
-if [[ "$task_nvcc_version" != *"release 13.0,"* ]]; then
-    echo "This recipe is pinned to CUDA Toolkit 13.0; select its nvcc in PATH." >&2
-    exit 2
-fi
-
 # Check driver/device/toolkit/headers and directory conflicts BEFORE creating
 # the isolated environment, downloading dependencies or compiling the library.
-python3.12 "$task_root/scripts/check_gb10_env.py"
+python3.12 "$task_root/scripts/check_gb10_env.py" "${task_preflight_args[@]}"
+# Use the exact Toolkit selected by the preflight, even if the caller had a
+# different CUDA_HOME. This changes only this setup process, not system links.
+export CUDA_HOME="$(dirname -- "$(dirname -- "$(readlink -f "$(command -v nvcc)")")")"
+echo "Build Toolkit: $CUDA_HOME"
+nvcc --version
 
 task_venv="$task_root/.venv-gb10-flute"
 if [[ -e "$task_venv" && ! -f "$task_venv/pyvenv.cfg" ]]; then
@@ -80,7 +99,6 @@ if [[ -e /workspace/cutlass && "$(readlink -f /workspace/cutlass)" != "$task_cut
         exit 2
     fi
 fi
-export CUDA_HOME="$(dirname -- "$(dirname -- "$(readlink -f "$(command -v nvcc)")")")"
 export TORCH_CUDA_ARCH_LIST=12.1
 export MAX_JOBS="${MAX_JOBS:-1}"
 export CPATH="$task_cutlass/include:$task_cutlass/tools/util/include${CPATH:+:$CPATH}"
