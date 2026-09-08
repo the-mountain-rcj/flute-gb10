@@ -1,0 +1,4 @@
+testcase_id,m,k,n
+decode,1,1536,4096
+small_batch,16,1536,4096
+prefill,128,1536,4096

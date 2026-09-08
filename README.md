@@ -1,3 +1,46 @@
+# GB10 A16 × FP4 E2M1 / group_size=128 测试
+
+本仓库在 [FLUTE](https://github.com/HanGuo97/flute) 原版代码上增加独立 CSV benchmark。
+FLUTE（Flexible Lookup Table Engine）通过查表在融合 GEMM 内解码低比特权重，再执行 FP16/BF16 MMA；本测试使用真实 E2M1 FP4 权重和 K 方向 g128 scale，不将 A 转成 FP8。
+
+目标是 **GB10 / SM121、Linux ARM64**。库内核、HPP、`setup.py` 均未修改；已通过 CPU 测试，**GB10 编译及 GPU 正确性/性能仍待实机验证**。
+
+## GB10 快速开始
+
+前提：Python 3.12（含 venv）、Git、C++ 编译器，以及已安装的 CUDA Toolkit 13.0 / 驱动。下面脚本只在本仓库的独立 `.venv-gb10-flute` 环境中安装依赖，不使用当前 DeepGEMM 环境。它固定 PyTorch 2.9.1 cu130、CUTLASS v3.4.1，编译需要时间和网络；不要直接安装上游全部 `requirements.txt`。
+
+```bash
+mkdir -p "$HOME/GB10"
+git clone --single-branch --branch codex/gb10-a16-fp4-g128-csv-tests \
+  https://github.com/the-mountain-rcj/flute-gb10.git "$HOME/GB10/flute-gb10"
+cd "$HOME/GB10/flute-gb10"
+bash scripts/setup_gb10_a16_fp4.sh
+source .venv-gb10-flute/bin/activate
+
+# 先完整检查小规模输出；passed=True 才继续正式测试。
+python benchmarks/bench_a16_fp4_g128.py \
+  --csv benchmarks/data/a16_fp4_g128_smoke.csv \
+  --result-csv results/smoke_bf16.csv \
+  --a-dtype bf16 --check-rows 0 --check-cols 0
+```
+
+只有构建成功、smoke 全部通过后，再单独运行：
+
+```bash
+# 用户的大矩阵：M=8192, K=1536, N=65536。
+python benchmarks/bench_a16_fp4_g128.py \
+  --csv benchmarks/data/a16_fp4_g128_large.csv \
+  --result-csv results/large_bf16.csv --a-dtype bf16
+```
+
+已有 Excel 导出的 `testcase_id,m,k,n` CSV 可以直接替换 `--csv`；FP16 用 `--a-dtype fp16`。默认激活和 scale 均为 BF16；权重实际为 4 位，group size 固定 128。本入口保守要求 K 为 512 的倍数、N 为 256 的倍数，不改变分组、不静默 padding。
+
+结果包含耗时、TFLOPS、误差、正确性检查覆盖范围，并写出环境 metadata。大矩阵默认抽样检查输出，但每个参考输出都计算完整 K。详细口径、手工安装、故障处理和 CPU 单测见 [GB10 完整说明](docs/gb10_a16_fp4_g128.md)。**构建失败或 smoke 失败时保留日志，不能据此报性能通过。**
+
+以下保留上游 README 和许可证，属于 FLUTE 原项目说明，不代表其官方已验证 GB10。
+
+---
+
 <p align="center">
     <img src="assets/flute-logo.png" alt="" width="40%" align="top" style="border-radius: 10px; padding-left: 120px; padding-right: 120px; background-color: white;">
 </p>
